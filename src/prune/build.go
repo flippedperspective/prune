@@ -1,14 +1,14 @@
 package main
 
 import (
-	"fmt"
 	"github.com/fsouza/go-dockerclient"
-	"os"
+	"sync"
 )
 
 type BuildRunner struct {
 	Verbose           bool   `cli:"opt -v --verbose desc='Enables verbose logging.'"`
 	Tag               bool   `cli:"opt -t --tag desc='Tags images on successful build'"`
+	NoCache           bool   `cli:"opt --no-cache desc='Build without using the docker cache.'"`
 	ConfigurationFile string `cli:"arg desc='The prune configuration file to use'"`
 }
 
@@ -18,17 +18,20 @@ func (runner *BuildRunner) Run() error {
 		return err
 	}
 
-	color := -1
+	color := 0
+	var wg sync.WaitGroup
 	for _, layer := range configuration.OrderedContainerLayers() {
 		for _, name := range layer {
-			func() {
-				color += 1
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
 				container := configuration.Containers[name]
 				if container.Build == "" {
 					return
 				}
 
-				// client, err := docker.NewVersionnedTLSClient("unix:///var/run/docker.sock", "", "", "", "1.16")
+				color += 1
+
 				client, err := docker.NewVersionedClient("unix:///var/run/docker.sock", "1.16")
 				if err != nil {
 					panic(err)
@@ -36,12 +39,12 @@ func (runner *BuildRunner) Run() error {
 
 				options := docker.BuildImageOptions{
 					Name:                "",
-					NoCache:             true,
+					NoCache:             runner.NoCache,
 					SuppressOutput:      !runner.Verbose,
 					RmTmpContainer:      true,
 					ForceRmTmpContainer: false,
 					InputStream:         nil,
-					OutputStream:        os.Stdout,
+					OutputStream:        DockerClientWriter{Color: color},
 					RawJSONStream:       false,
 					Remote:              "",
 					Auth:                docker.AuthConfiguration{},
@@ -52,16 +55,14 @@ func (runner *BuildRunner) Run() error {
 					options.Name = container.Image
 				}
 
-				fmt.Printf("\033[38;5;%vm", color)
-				fmt.Println(options)
 				err = client.BuildImage(options)
 				if err != nil {
 					panic(err)
 				}
-				fmt.Print("\033[0m")
 			}()
 		}
 	}
+	wg.Wait()
 
 	return nil
 }
